@@ -28,7 +28,7 @@ class ThreadGpuSamplingCmd(threading.Thread):
     info about the processes running on the GPU while pynvml doesn't.
     """
     
-    SECONDS_BETWEEN_SAMPLES = 0.5
+    SECONDS_BETWEEN_SAMPLES = 0.1
     
     def __init__(self, name):
         """Init the thread variables and the nvsmi instance to be queried later on.
