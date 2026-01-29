@@ -68,7 +68,7 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
     True. The samples are stored in the array self.power_draw_history.
     """
     
-    SECONDS_BETWEEN_SAMPLES = 0.5
+    SECONDS_BETWEEN_SAMPLES = 0.1
     
     def __init__(self, name):
         """Init the thread variables and the nvsmi instance to be queried later on.
