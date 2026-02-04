@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="energymeter",                   # Package name
-    version="1.0.0",                     # Version
+    version="2.0.0",                     # Version
     author="Mauricio Fadel Argerich",
     author_email="maufadel@icloud.com",
     description="A library to measure energy consumption of applications",
