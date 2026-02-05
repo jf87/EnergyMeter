@@ -5,7 +5,7 @@ EnergyMeter is a Python module that combines pyRAPL, NVIDIA-SMI and eBPF to esti
 The new version improves the accuracy of the energy consumption of the GPU while also reducing the overhead of the meter, so there is no visible overhead now.
 
 ## How to install
-You can install EnergyMeter by cloning this repository and using pip:
+You can install EnergyMeter via pip or uv and PyPi: `pip install ai-energymeter`, or by cloning this repository and using pip:
 ```
 git clone https://github.com/maufadel/EnergyMeter.git
 cd EnergyMeter
@@ -15,7 +15,7 @@ pip install .
 ## How to use
 The most basic usage of EnergyMeter is as follows:
 ```
-from energy_meter import EnergyMeter
+from energymeter import EnergyMeter
 
 em = EnergyMeter(disk_avg_speed=1600*1e6, # The average speed of your storage (see below how you can get it)
                   disk_active_power=6,    # How many Watts are used when the storage is reading or writing (you can usually find it in specs of your storage)
