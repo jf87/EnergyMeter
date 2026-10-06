@@ -116,7 +116,8 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
         """
         Total energy consumed by the GPU since the driver was loaded, in millijoules, from the
         board's hardware counter (Volta and newer). Differences of two readings give the energy
-        of an interval exactly, independent of the sampling rate and of NVML's power averaging.
+        of an interval without gaps between samples, independent of the sampling rate; the
+        counter updates about every 100 ms, which bounds the precision at interval boundaries.
 
         Returns:
             int or None if the GPU does not support the counter
@@ -486,8 +487,8 @@ class EnergyMeter:
 
     def get_total_joules_gpu_counter(self):
         """GPU energy between meter.begin() and meter.end() from the hardware energy counter
-        (Volta and newer), including idle. Exact for short intervals, where integrating sampled
-        power is limited by the sampling rate and NVML's power averaging.
+        (Volta and newer), including idle. Unlike integrating sampled power, nothing between samples
+        is missed; precision is limited by the counter's update interval (~100 ms) at both ends.
 
         :returns: joules, or None if the GPU has no energy counter.
         """

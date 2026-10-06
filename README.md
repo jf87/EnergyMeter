@@ -80,5 +80,6 @@ If you found this repository useful, please cite our work:
   processes with other names, e.g. vLLM's `VLLM::EngineCor`.
 - GPU hardware energy counter (Volta and newer): every GPU sample includes `energy_mj` (millijoules
   since driver load) and `EnergyMeter.get_total_joules_gpu_counter()` returns the exact GPU energy
-  between `begin()` and `end()` from two counter readings, independent of the sampling rate and of
-  NVML's power averaging (useful for short intervals). `None` if the GPU has no counter.
+  between `begin()` and `end()` from two counter readings: no gaps between power samples, independent
+  of the sampling rate. The counter itself updates every ~100 ms (measured on L4, A30, T4), so each
+  interval boundary is uncertain by up to one update. `None` if the GPU has no counter.
