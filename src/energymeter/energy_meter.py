@@ -54,10 +54,12 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
         
         # Initialize NVML and get GPU handle
         self._nvml_initialized = False
+        self.energy_counter_supported = False
         try:
             nvmlInit()
             self.gpu_handle = nvmlDeviceGetHandleByIndex(self.gpu_index)
             self._nvml_initialized = True
+            self.energy_counter_supported = self.read_energy_counter_mj() is not None
         except NVMLError as e:
             print(f"Warning: Failed to initialize NVML: {e}")
             print("GPU energy measurements will not be available.")
@@ -101,6 +103,8 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
             'gpu_util': nvmlDeviceGetUtilizationRates(h).gpu,
             'temp_c': nvmlDeviceGetTemperature(h, NVML_TEMPERATURE_GPU),
         }
+        if self.energy_counter_supported:
+            sample['energy_mj'] = self.read_energy_counter_mj()
         if self.extended_metrics:
             sample['sm_clock_mhz'] = nvmlDeviceGetClockInfo(h, NVML_CLOCK_SM)
             sample['mem_clock_mhz'] = nvmlDeviceGetClockInfo(h, NVML_CLOCK_MEM)
@@ -108,6 +112,20 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
             sample['mem_used_mib'] = nvmlDeviceGetMemoryInfo(h).used / 2**20
         return sample
     
+    def read_energy_counter_mj(self):
+        """
+        Total energy consumed by the GPU since the driver was loaded, in millijoules, from the
+        board's hardware counter (Volta and newer). Differences of two readings give the energy
+        of an interval exactly, independent of the sampling rate and of NVML's power averaging.
+
+        Returns:
+            int or None if the GPU does not support the counter
+        """
+        try:
+            return nvmlDeviceGetTotalEnergyConsumption(self.gpu_handle)
+        except NVMLError:
+            return None
+
     def get_samples(self):
         """
         Get a copy of all samples (thread-safe).
@@ -159,7 +177,9 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
             energy_j = np.trapezoid(power_values, timestamps)
             energy_wh = energy_j / 3600
             
+            counter = [s['energy_mj'] for s in self.samples if 'energy_mj' in s]
             return {
+                'energy_counter_j': (counter[-1] - counter[0]) / 1000.0 if len(counter) > 1 else None,
                 'power_w': {
                     'mean': np.mean(power_values),
                     'max': np.max(power_values),
@@ -315,6 +335,8 @@ class EnergyMeter:
                 self.ignore_disk = True
 
         # Thread for GPU.
+        self.gpu_counter_begin_mj = self.thread_gpu.read_energy_counter_mj() \
+            if self.thread_gpu._nvml_initialized else None
         self.thread_gpu.start()
 
     def end(self):
@@ -332,6 +354,10 @@ class EnergyMeter:
                 subprocess.check_output(shlex.split("sudo kill {}".format(self.bpftrace_pid)))
             except Exception as e:
                 print(f"Warning: Could not stop bpftrace: {e}")
+
+        # Hardware energy counter at the end of the interval.
+        self.gpu_counter_end_mj = self.thread_gpu.read_energy_counter_mj() \
+            if self.thread_gpu._nvml_initialized else None
 
         # Stop tracking GPU power usage.
         self.thread_gpu.stop = True
@@ -457,6 +483,18 @@ class EnergyMeter:
         else:
             # Use total energy (including idle)
             return stats['energy_j']
+
+    def get_total_joules_gpu_counter(self):
+        """GPU energy between meter.begin() and meter.end() from the hardware energy counter
+        (Volta and newer), including idle. Exact for short intervals, where integrating sampled
+        power is limited by the sampling rate and NVML's power averaging.
+
+        :returns: joules, or None if the GPU has no energy counter.
+        """
+        if getattr(self, 'gpu_counter_begin_mj', None) is None or \
+                getattr(self, 'gpu_counter_end_mj', None) is None:
+            return None
+        return (self.gpu_counter_end_mj - self.gpu_counter_begin_mj) / 1000.0
 
     def get_total_joules_per_component(self):
         """This returns the total energy consumption in joules between meter.begin() and

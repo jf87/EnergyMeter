@@ -78,3 +78,7 @@ If you found this repository useful, please cite our work:
 - `EnergyMeter(..., disk_processes=(...))` sets the process names whose disk I/O is counted
   (default `("python", "python3")`; `None` = all processes). Inference engines often run in worker
   processes with other names, e.g. vLLM's `VLLM::EngineCor`.
+- GPU hardware energy counter (Volta and newer): every GPU sample includes `energy_mj` (millijoules
+  since driver load) and `EnergyMeter.get_total_joules_gpu_counter()` returns the exact GPU energy
+  between `begin()` and `end()` from two counter readings, independent of the sampling rate and of
+  NVML's power averaging (useful for short intervals). `None` if the GPU has no counter.
