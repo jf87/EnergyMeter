@@ -24,7 +24,7 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
     Thread to sample GPU power draw and utilization using PyNVML.
     """
     
-    def __init__(self, name, gpu_index=0, seconds_between_samples=0.1):
+    def __init__(self, name, gpu_index=0, seconds_between_samples=0.1, extended_metrics=False):
         """
         Initialize the sampling thread.
         
@@ -32,6 +32,9 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
             name: Thread name
             gpu_index: GPU device index (default 0)
             seconds_between_samples: Sampling interval in seconds
+            extended_metrics: also record SM/memory clocks (MHz), performance state (P-state)
+                and GPU memory used (MiB). These separate idle power states, e.g. an idle GPU
+                held in P0 by an open CUDA context vs. one that dropped to P8.
         """
         threading.Thread.__init__(self)
         self.name = name
@@ -39,6 +42,7 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
         self.stop = False
         self.gpu_index = gpu_index
         self.seconds_between_samples = seconds_between_samples
+        self.extended_metrics = extended_metrics
         
         # Thread-safe storage with timestamps
         self._lock = threading.Lock()
@@ -68,38 +72,41 @@ class ThreadGpuSamplingPyNvml(threading.Thread):
             
         while not self.stop:
             try:
-                timestamp = time.time()
-                
-                # Get power draw (in milliwatts, convert to watts)
-                power_mw = nvmlDeviceGetPowerUsage(self.gpu_handle)
-                power_w = power_mw / 1000.0
-                
-                # Get GPU utilization (percentage)
-                utilization = nvmlDeviceGetUtilizationRates(self.gpu_handle)
-                gpu_util = utilization.gpu
-                
-                # Get temperature
-                temp = nvmlDeviceGetTemperature(self.gpu_handle, NVML_TEMPERATURE_GPU)
-                
-                # Store sample
-                sample = {
-                    'timestamp': timestamp,
-                    'power_w': power_w,
-                    'gpu_util': gpu_util,
-                    'temp_c': temp,
-                }
-                
+                sample = self.sample_once()
                 with self._lock:
                     self.samples.append(sample)
                     # Update backward compatibility lists
-                    self.power_draw_history.append(power_w)
-                    self.activity_history.append(gpu_util)
+                    self.power_draw_history.append(sample['power_w'])
+                    self.activity_history.append(sample['gpu_util'])
                 
             except NVMLError as e:
                 print(f"NVML sampling error: {e}")
                 # Continue sampling even if one sample fails
             
             time.sleep(self.seconds_between_samples)
+
+    def sample_once(self):
+        """
+        Read one sample of the GPU metrics (also usable by subclasses with their own loop).
+
+        Returns:
+            dict: timestamp, power_w, gpu_util, temp_c (+ sm_clock_mhz, mem_clock_mhz,
+            pstate, mem_used_mib if extended_metrics)
+        """
+        h = self.gpu_handle
+        sample = {
+            'timestamp': time.time(),
+            # Power draw in milliwatts, converted to watts
+            'power_w': nvmlDeviceGetPowerUsage(h) / 1000.0,
+            'gpu_util': nvmlDeviceGetUtilizationRates(h).gpu,
+            'temp_c': nvmlDeviceGetTemperature(h, NVML_TEMPERATURE_GPU),
+        }
+        if self.extended_metrics:
+            sample['sm_clock_mhz'] = nvmlDeviceGetClockInfo(h, NVML_CLOCK_SM)
+            sample['mem_clock_mhz'] = nvmlDeviceGetClockInfo(h, NVML_CLOCK_MEM)
+            sample['pstate'] = nvmlDeviceGetPerformanceState(h)
+            sample['mem_used_mib'] = nvmlDeviceGetMemoryInfo(h).used / 2**20
+        return sample
     
     def get_samples(self):
         """
@@ -218,7 +225,8 @@ class EnergyMeter:
 
     def __init__(self, disk_avg_speed=None, disk_active_power=None, disk_idle_power=None, 
                  label=None, include_idle=False, ignore_disk=False, 
-                 gpu_index=0, gpu_sampling_rate=0.1):
+                 gpu_index=0, gpu_sampling_rate=0.1, disk_processes=("python", "python3"),
+                 gpu_extended_metrics=False):
         """Initiates the variables required to meter the energy consumption of all
         components and sets up the pyRAPL library.
         :param disk_avg_speed: the average read and write speed of the hard disk where
@@ -236,6 +244,10 @@ class EnergyMeter:
             for compatibility with systems without access to sudo or bpftrace)
         :param gpu_index: GPU device index to monitor (default 0)
         :param gpu_sampling_rate: sampling frequency in seconds (default 0.1 = 10Hz)
+        :param disk_processes: process names (bpftrace `comm`, max. 15 characters) whose disk
+            I/O is counted; None counts all processes. Inference engines often run in worker
+            processes with other names, e.g. vLLM's "VLLM::EngineCor".
+        :param gpu_extended_metrics: also sample GPU clocks, P-state and memory used.
         """
         if label:
             self.label = label
@@ -257,6 +269,7 @@ class EnergyMeter:
 
         # Setup disk parameters.
         self.ignore_disk = ignore_disk
+        self.disk_processes = disk_processes
         if ignore_disk == False and (disk_avg_speed is None or disk_active_power is None or disk_idle_power is None):
             raise Exception("disk_avg_speed, disk_active_power, and disk_idle_power are necessary values if disk energy will be monitored; if you want to ignore the disk, set ignore_disk=True when calling init.")
         else:
@@ -268,7 +281,8 @@ class EnergyMeter:
         self.thread_gpu = ThreadGpuSamplingPyNvml(
             name="GPU Sampling Thread",
             gpu_index=gpu_index,
-            seconds_between_samples=gpu_sampling_rate
+            seconds_between_samples=gpu_sampling_rate,
+            extended_metrics=gpu_extended_metrics
         )
 
         # Create command for bpftrace subprocess that will count the bytes read and
@@ -348,9 +362,12 @@ class EnergyMeter:
             po = bpftrace_output.split("\n")
             rbytes = json.loads(po[3]).get("data").get("@rbytes")
             wbytes = json.loads(po[4]).get("data").get("@wbytes")
-            # Do we want to measure other programs disk IO too?
-            total_rbytes = rbytes.get("python", 0) + rbytes.get("python3", 0)
-            total_wbytes = wbytes.get("python", 0) + wbytes.get("python3", 0)
+            if self.disk_processes is None:  # all processes
+                total_rbytes = sum(rbytes.values())
+                total_wbytes = sum(wbytes.values())
+            else:
+                total_rbytes = sum(rbytes.get(p, 0) for p in self.disk_processes)
+                total_wbytes = sum(wbytes.get(p, 0) for p in self.disk_processes)
         else:
             # bpftrace produced no output, which means there was no IO activity in the
             # disk. This only happens when the code run has a very short duration.

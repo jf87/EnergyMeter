@@ -69,3 +69,12 @@ If you found this repository useful, please cite our work:
   publisher={IEEE}
 }
 ```
+
+### Extended GPU metrics and disk process filter
+- `EnergyMeter(..., gpu_extended_metrics=True)` (or `ThreadGpuSamplingPyNvml(..., extended_metrics=True)`)
+  additionally samples SM/memory clocks, the performance state (P-state) and GPU memory used, which
+  separate idle power states (e.g. an idle GPU held in P0 by an open CUDA context vs. one in P8).
+  `ThreadGpuSamplingPyNvml.sample_once()` returns one sample, for subclasses with their own loop.
+- `EnergyMeter(..., disk_processes=(...))` sets the process names whose disk I/O is counted
+  (default `("python", "python3")`; `None` = all processes). Inference engines often run in worker
+  processes with other names, e.g. vLLM's `VLLM::EngineCor`.
